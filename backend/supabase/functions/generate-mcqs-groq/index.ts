@@ -8,6 +8,7 @@ type Body = {
   content_type?: string;
   llm_provider?: string;
   mcq_count?: number;
+  text_chunks?: string[];
 };
 
 const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY");
@@ -124,16 +125,34 @@ Deno.serve(async (req) => {
       );
     }
 
-    const { text_content, mcq_count }: Body = await req.json();
+    const { text_content, mcq_count, text_chunks }: Body = await req.json();
 
-    if (!text_content) {
+    const sanitizedChunks =
+      text_chunks
+        ?.filter((chunk): chunk is string => typeof chunk === "string")
+        .map((chunk) => chunk.trim())
+        .filter((chunk) => chunk.length > 0) ?? [];
+
+    const primaryText = text_content?.trim();
+
+    if ((!primaryText || primaryText.length === 0) && sanitizedChunks.length === 0) {
       return new Response(
-        JSON.stringify({ ok: false, error: "text_content is required" }),
+        JSON.stringify({
+          ok: false,
+          error: "text_content or text_chunks is required",
+        }),
         { status: 400, headers: { "Content-Type": "application/json" } }
       );
     }
 
-    const count = mcq_count && mcq_count > 0 ? mcq_count : 20;
+    const count = 20;
+
+    const studyMaterialSections = (sanitizedChunks.length ? sanitizedChunks : [primaryText!])
+      .map(
+        (chunk, index) =>
+          `STUDY MATERIAL SECTION ${index + 1}:\n${chunk}`
+      )
+      .join("\n\n");
 
     const prompt = `
 You are an expert MCQ generator. Create ${count} high-quality multiple-choice questions that test users' understanding and knowledge of the concepts, facts, and ideas covered in the study material.
@@ -148,7 +167,7 @@ CRITICAL REQUIREMENTS:
 7. Respond ONLY with a valid JSON array - no markdown, no code blocks, no additional text
 `;
 
-    const groqRaw = await callGroqWithText(text_content, prompt);
+    const groqRaw = await callGroqWithText(studyMaterialSections, prompt);
 
     let mcqs: any[] = [];
     try {
