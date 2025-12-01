@@ -133,7 +133,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    const count = mcq_count && mcq_count > 0 ? mcq_count : 30;
+    const count = mcq_count && mcq_count > 0 ? mcq_count : 20;
 
     const prompt = `
 You are an expert MCQ generator. Create ${count} high-quality multiple-choice questions that test users' understanding and knowledge of the concepts, facts, and ideas covered in the study material.
