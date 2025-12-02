@@ -11,6 +11,9 @@ type Body = {
   text_chunks?: string[];
 };
 
+const MAX_INPUT_LENGTH = 2500;
+const MAX_OUTPUT_TOKENS = 1000;
+
 const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY");
 const GROQ_MODEL = "llama-3.1-8b-instant";
 
@@ -18,10 +21,16 @@ async function callGroqWithText(
   textContent: string,
   prompt: string,
   maxRetries = 3
-) {
+): Promise<{ content: string; completionTokens: number }> {
   if (!GROQ_API_KEY) {
     throw new Error("GROQ_API_KEY is not set in the environment");
   }
+
+  // Enforce maximum input length
+  const limitedTextContent =
+    textContent.length > MAX_INPUT_LENGTH
+      ? textContent.slice(0, MAX_INPUT_LENGTH)
+      : textContent;
 
   const body = {
     model: GROQ_MODEL,
@@ -33,10 +42,11 @@ async function callGroqWithText(
       },
       {
         role: "user",
-        content: `${prompt}\n\nSTUDY MATERIAL:\n${textContent}`,
+        content: `${prompt}\n\nSTUDY MATERIAL:\n${limitedTextContent}`,
       },
     ],
     temperature: 0.2,
+    max_tokens: MAX_OUTPUT_TOKENS,
   };
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -67,7 +77,8 @@ async function callGroqWithText(
         data.choices?.[0]?.message?.content ??
         data.choices?.[0]?.message?.content?.[0]?.text ??
         "[]";
-      return content;
+      const completionTokens = data.usage?.completion_tokens ?? 0;
+      return { content, completionTokens };
     } catch (error) {
       if (attempt === maxRetries) {
         throw error;
@@ -167,7 +178,7 @@ CRITICAL REQUIREMENTS:
 7. Respond ONLY with a valid JSON array - no markdown, no code blocks, no additional text
 `;
 
-    const groqRaw = await callGroqWithText(studyMaterialSections, prompt);
+    const { content: groqRaw, completionTokens } = await callGroqWithText(text_content, prompt);
 
     let mcqs: any[] = [];
     try {
@@ -198,6 +209,7 @@ CRITICAL REQUIREMENTS:
         generated_at: new Date().toISOString(),
         count: mcqs.length,
         model: GROQ_MODEL,
+        total_output_tokens: completionTokens,
       }),
       { headers: { "Content-Type": "application/json" } }
     );
