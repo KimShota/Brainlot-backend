@@ -561,7 +561,7 @@ Deno.serve(async (req) => {
     console.log("🤖 Generating new MCQs...");
     
     const prompt = `
-You are an expert MCQ generator. Create 30 high-quality multiple-choice questions that test users' understanding and knowledge of the concepts, facts, and ideas covered in the study material.
+You are an expert MCQ generator. Create 20 high-quality multiple-choice questions that test users' understanding and knowledge of the concepts, facts, and ideas covered in the study material.
 
 CRITICAL REQUIREMENTS:
 1. Questions MUST test understanding and knowledge of concepts, facts, and ideas - NOT retrieval of specific text passages
