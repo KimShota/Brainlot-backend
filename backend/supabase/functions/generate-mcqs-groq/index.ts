@@ -12,7 +12,7 @@ type Body = {
 };
 
 const MAX_INPUT_LENGTH = 2500;
-const MAX_OUTPUT_TOKENS = 1000;
+const MAX_OUTPUT_TOKENS = 1300;
 
 const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY");
 const GROQ_MODEL = "llama-3.1-8b-instant";
