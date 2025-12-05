@@ -17,6 +17,16 @@ const MAX_OUTPUT_TOKENS = 1500;
 const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY");
 const GROQ_MODEL = "llama-3.1-8b-instant";
 
+// User subscription limits (daily only)
+const USER_LIMITS = {
+  FREE: {
+    daily_limit: 5      // 5 files per day
+  },
+  PRO: {
+    daily_limit: 50     // 50 files per day
+  }
+};
+
 async function callGroqWithText(
   textContent: string,
   staticPrompt: string,
@@ -132,6 +142,174 @@ async function callGroqWithText(
   throw new Error("Max retries exceeded without returning a result");
 }
 
+/**
+ * Get user subscription status from database
+ */
+async function getUserSubscription(userId: string, supabaseClient: any): Promise<'FREE' | 'PRO'> {
+  try {
+    const { data, error } = await supabaseClient
+      .from('user_subscriptions')
+      .select('plan_type, status')
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .single();
+    
+    if (error || !data) {
+      return 'FREE'; // Default to free if no subscription found
+    }
+    
+    // Map plan_type to subscription level
+    return data.plan_type === 'pro' ? 'PRO' : 'FREE';
+  } catch (error) {
+    console.error('Error fetching user subscription:', error);
+    return 'FREE';
+  }
+}
+
+/**
+ * Get user usage stats from database (daily limit only)
+ */
+async function getUserUsageStatsFromDB(userId: string, supabaseClient: any): Promise<{
+  uploads_today: number;
+  daily_reset_at: string;
+}> {
+  try {
+    // Use RPC function to get stats (automatically checks and resets if needed)
+    const { data, error } = await supabaseClient.rpc('get_user_usage_stats', {
+      user_id_param: userId,
+    });
+
+    if (error) {
+      console.error('Error fetching usage stats from RPC:', error);
+      // Fallback to direct query
+      const { data: fallbackData, error: fallbackError } = await supabaseClient
+        .from('user_usage_stats')
+        .select('uploads_today, daily_reset_at')
+        .eq('user_id', userId)
+        .single();
+
+      if (fallbackError) {
+        console.error('Error fetching usage stats (fallback):', fallbackError);
+        // Return defaults if record doesn't exist
+        return {
+          uploads_today: 0,
+          daily_reset_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        };
+      }
+
+      return {
+        uploads_today: fallbackData.uploads_today || 0,
+        daily_reset_at: fallbackData.daily_reset_at || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      };
+    }
+
+    if (data && data.length > 0) {
+      return {
+        uploads_today: data[0].uploads_today || 0,
+        daily_reset_at: data[0].daily_reset_at || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      };
+    }
+
+    // Default if no data
+    return {
+      uploads_today: 0,
+      daily_reset_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    };
+  } catch (error) {
+    console.error('Error in getUserUsageStatsFromDB:', error);
+    return {
+      uploads_today: 0,
+      daily_reset_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    };
+  }
+}
+
+/**
+ * Check user-specific limits (daily only) using database
+ */
+async function checkUserLimits(
+  userId: string, 
+  subscription: 'FREE' | 'PRO',
+  supabaseClient: any
+): Promise<{
+  allowed: boolean;
+  limitType: 'daily' | null;
+  remaining: number;
+  resetTime: number;
+}> {
+  const limits = USER_LIMITS[subscription];
+  
+  // Get usage stats from database
+  const usage = await getUserUsageStatsFromDB(userId, supabaseClient);
+  
+  // Check daily limit only
+  if (usage.uploads_today >= limits.daily_limit) {
+    return {
+      allowed: false,
+      limitType: 'daily',
+      remaining: 0,
+      resetTime: new Date(usage.daily_reset_at).getTime(),
+    };
+  }
+  
+  // Daily limit passed
+  return {
+    allowed: true,
+    limitType: null,
+    remaining: limits.daily_limit - usage.uploads_today,
+    resetTime: new Date(usage.daily_reset_at).getTime(),
+  };
+}
+
+/**
+ * Increment user usage counters in database
+ */
+async function incrementUserUsage(userId: string, supabaseClient: any): Promise<void> {
+  try {
+    // Use RPC function to increment (automatically handles daily reset)
+    const { error } = await supabaseClient.rpc('increment_upload_count', {
+      user_id_param: userId,
+    });
+
+    if (error) {
+      console.error('Error incrementing upload count via RPC:', error);
+      // Fallback to manual update (daily limit only)
+      const { data: current } = await supabaseClient
+        .from('user_usage_stats')
+        .select('uploads_today, daily_reset_at')
+        .eq('user_id', userId)
+        .single();
+
+      if (current) {
+        const now = new Date();
+        const resetAt = new Date(current.daily_reset_at);
+        
+        // Check if daily reset is needed
+        if (now >= resetAt) {
+          await supabaseClient
+            .from('user_usage_stats')
+            .update({
+              uploads_today: 1,
+              daily_reset_at: new Date(now.setUTCHours(24, 0, 0, 0)).toISOString(),
+            })
+            .eq('user_id', userId);
+        } else {
+          await supabaseClient
+            .from('user_usage_stats')
+            .update({
+              uploads_today: (current.uploads_today || 0) + 1,
+            })
+            .eq('user_id', userId);
+        }
+      }
+    } else {
+      console.log(`✅ User ${userId} upload count incremented via RPC`);
+    }
+  } catch (error) {
+    console.error('Error in incrementUserUsage:', error);
+  }
+}
+
 Deno.serve(async (req) => {
   try {
     if (req.method !== "POST") {
@@ -177,6 +355,33 @@ Deno.serve(async (req) => {
       return new Response(
         JSON.stringify({ ok: false, error: "Unauthorized: Invalid token" }),
         { status: 401, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    console.log("✅ User authenticated:", user.id);
+
+    // Get user subscription and check limits BEFORE calling Groq API
+    const subscription = await getUserSubscription(user.id, supabaseClient);
+    console.log(`👤 User ${user.id} subscription: ${subscription}`);
+    
+    const userLimits = await checkUserLimits(user.id, subscription, supabaseClient);
+    if (!userLimits.allowed) {
+      const resetTimeDays = Math.ceil((userLimits.resetTime - Date.now()) / (24 * 60 * 60 * 1000));
+      
+      const errorMessage = `Daily limit reached. You can generate MCQs again in ${resetTimeDays} day(s).`;
+      
+      return new Response(
+        JSON.stringify({ 
+          ok: false, 
+          error: errorMessage,
+          user_limits: {
+            subscription: subscription,
+            limit_type: userLimits.limitType,
+            remaining: 0,
+            reset_time: userLimits.resetTime
+          }
+        }),
+        { status: 429, headers: { "Content-Type": "application/json" } }
       );
     }
 
@@ -319,6 +524,9 @@ GOOD EXAMPLES:
       );
     }
 
+    // Increment user usage count AFTER successful MCQ generation
+    await incrementUserUsage(user.id, supabaseClient);
+
     return new Response(
       JSON.stringify({
         ok: true,
@@ -327,6 +535,11 @@ GOOD EXAMPLES:
         count: mcqs.length,
         model: GROQ_MODEL,
         usage,
+        user_limits: {
+          subscription: subscription,
+          remaining: userLimits.remaining - 1, // Subtract 1 since we just incremented
+          reset_time: userLimits.resetTime
+        }
       }),
       { headers: { "Content-Type": "application/json" } }
     );
