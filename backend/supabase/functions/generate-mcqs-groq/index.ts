@@ -20,7 +20,6 @@ const GROQ_MODEL = "llama-3.1-8b-instant";
 async function callGroqWithText(
   textContent: string,
   staticPrompt: string,
-  dynamicPrompt: string,
   maxRetries = 3
 ): Promise<{ 
   content: string; 
@@ -38,6 +37,7 @@ async function callGroqWithText(
 
   // Optimize for prompt caching: static prompt first, dynamic content last
   // This allows Groq API to cache the static prefix and only charge for dynamic content
+  // The static prompt is completely fixed, so it will be cached after the first request
   const body = {
     model: GROQ_MODEL,
     messages: [
@@ -48,8 +48,8 @@ async function callGroqWithText(
       },
       {
         role: "user",
-        // Static prompt first (will be cached), then dynamic content (count + study material)
-        content: `${staticPrompt}${dynamicPrompt}\n\nSTUDY MATERIAL:\n${limitedTextContent}`,
+        // Static prompt first (will be cached), then dynamic content (study material only)
+        content: `${staticPrompt}\n\nSTUDY MATERIAL:\n${limitedTextContent}`,
       },
     ],
     response_format: {type: "json_object"},
@@ -200,8 +200,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    const count = mcq_count ?? 20;
-
     const studyMaterialSections = (sanitizedChunks.length ? sanitizedChunks : [primaryText!])
       .map(
         (chunk, index) =>
@@ -209,10 +207,10 @@ Deno.serve(async (req) => {
       )
       .join("\n\n");
 
-    // Split prompt into static and dynamic parts for optimal caching
-    // Static prompt (will be cached) - contains instructions that don't change
+    // Static prompt (completely fixed, will be cached after first request)
+    // This entire prompt remains identical across all requests, maximizing cache hits
     const staticPrompt = `
-You are an expert MCQ generator. Create high-quality multiple-choice questions that test users' understanding and knowledge of the concepts, facts, and ideas covered in the study material.
+You are an expert MCQ generator. Create 20 high-quality multiple-choice questions that test users' understanding and knowledge of the concepts, facts, and ideas covered in the study material.
 
 CRITICAL REQUIREMENTS:
 1. Questions MUST test understanding and knowledge of concepts, facts, and ideas - NOT retrieval of specific text passages
@@ -233,13 +231,10 @@ GOOD EXAMPLES:
 { "question": "How does the speed of sound change with temperature?", "options": ["Increases by 0.6 m/s per °C", "Decreases by 0.6 m/s per °C", "Remains constant", "Increases by 3.31 m/s per °C"], "answer_index": 0 }
 `;
 
-    // Dynamic prompt (changes per request) - contains count variable
-    const dynamicPrompt = `\n\nCreate exactly ${count} questions based on the study material below.`;
-
     const { 
       content: groqRaw, 
       usage 
-    } = await callGroqWithText(studyMaterialSections, staticPrompt, dynamicPrompt);
+    } = await callGroqWithText(studyMaterialSections, staticPrompt);
 
     let mcqs: any[] = [];
     try {
