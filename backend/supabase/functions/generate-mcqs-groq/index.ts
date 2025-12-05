@@ -19,7 +19,8 @@ const GROQ_MODEL = "llama-3.1-8b-instant";
 
 async function callGroqWithText(
   textContent: string,
-  prompt: string,
+  staticPrompt: string,
+  dynamicPrompt: string,
   maxRetries = 3
 ): Promise<{ 
   content: string; 
@@ -35,6 +36,8 @@ async function callGroqWithText(
       ? textContent.slice(0, MAX_INPUT_LENGTH)
       : textContent;
 
+  // Optimize for prompt caching: static prompt first, dynamic content last
+  // This allows Groq API to cache the static prefix and only charge for dynamic content
   const body = {
     model: GROQ_MODEL,
     messages: [
@@ -45,7 +48,8 @@ async function callGroqWithText(
       },
       {
         role: "user",
-        content: `${prompt}\n\nSTUDY MATERIAL:\n${limitedTextContent}`,
+        // Static prompt first (will be cached), then dynamic content (count + study material)
+        content: `${staticPrompt}${dynamicPrompt}\n\nSTUDY MATERIAL:\n${limitedTextContent}`,
       },
     ],
     response_format: {type: "json_object"},
@@ -91,8 +95,16 @@ async function callGroqWithText(
         "[]";
       const usage = data.usage ?? {};
       const completionTokens = usage.completion_tokens ?? 0;
+      const cachedTokens = usage.cached_tokens ?? 0;
+      const promptTokens = usage.prompt_tokens ?? 0;
       
-      // Log token usage for monitoring (no truncation)
+      // Log token usage and caching effectiveness
+      if (cachedTokens > 0) {
+        console.log(
+          `✅ Prompt caching active: ${cachedTokens} cached tokens (${Math.round((cachedTokens / promptTokens) * 100)}% of prompt cached)`
+        );
+      }
+      
       if (completionTokens > MAX_OUTPUT_TOKENS) {
         console.warn(
           `⚠️ Response exceeded token limit: ${completionTokens} > ${MAX_OUTPUT_TOKENS}`
@@ -115,6 +127,9 @@ async function callGroqWithText(
       await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
     }
   }
+  
+  // This should never be reached, but TypeScript requires it
+  throw new Error("Max retries exceeded without returning a result");
 }
 
 Deno.serve(async (req) => {
@@ -194,8 +209,10 @@ Deno.serve(async (req) => {
       )
       .join("\n\n");
 
-    const prompt = `
-You are an expert MCQ generator. Create ${count} high-quality multiple-choice questions that test users' understanding and knowledge of the concepts, facts, and ideas covered in the study material.
+    // Split prompt into static and dynamic parts for optimal caching
+    // Static prompt (will be cached) - contains instructions that don't change
+    const staticPrompt = `
+You are an expert MCQ generator. Create high-quality multiple-choice questions that test users' understanding and knowledge of the concepts, facts, and ideas covered in the study material.
 
 CRITICAL REQUIREMENTS:
 1. Questions MUST test understanding and knowledge of concepts, facts, and ideas - NOT retrieval of specific text passages
@@ -216,10 +233,13 @@ GOOD EXAMPLES:
 { "question": "How does the speed of sound change with temperature?", "options": ["Increases by 0.6 m/s per °C", "Decreases by 0.6 m/s per °C", "Remains constant", "Increases by 3.31 m/s per °C"], "answer_index": 0 }
 `;
 
+    // Dynamic prompt (changes per request) - contains count variable
+    const dynamicPrompt = `\n\nCreate exactly ${count} questions based on the study material below.`;
+
     const { 
       content: groqRaw, 
       usage 
-    } = await callGroqWithText(studyMaterialSections, prompt);
+    } = await callGroqWithText(studyMaterialSections, staticPrompt, dynamicPrompt);
 
     let mcqs: any[] = [];
     try {
@@ -286,8 +306,18 @@ GOOD EXAMPLES:
       throw error;
     }
 
-    // Log token usage for monitoring (no truncation)
+    // Log token usage and caching effectiveness for monitoring
     const completionTokens = usage?.completion_tokens ?? 0;
+    const cachedTokens = usage?.cached_tokens ?? 0;
+    const promptTokens = usage?.prompt_tokens ?? 0;
+    
+    if (cachedTokens > 0) {
+      const cachePercentage = Math.round((cachedTokens / promptTokens) * 100);
+      console.log(
+        `💰 Cost optimization: ${cachedTokens}/${promptTokens} prompt tokens cached (${cachePercentage}%) - charged at cached input rate`
+      );
+    }
+    
     if (completionTokens > MAX_OUTPUT_TOKENS) {
       console.warn(
         `⚠️ Token limit exceeded: ${completionTokens} tokens used (limit: ${MAX_OUTPUT_TOKENS})`
