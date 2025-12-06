@@ -20,10 +20,10 @@ const GROQ_MODEL = "llama-3.1-8b-instant";
 // User subscription limits (daily only)
 const USER_LIMITS = {
   FREE: {
-    daily_limit: 5      // 5 files per day
+    daily_limit: 3      // 3 sessions per day
   },
   PRO: {
-    daily_limit: 50     // 50 files per day
+    daily_limit: 500    // 500 sessions per day
   }
 };
 
