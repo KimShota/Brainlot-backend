@@ -144,6 +144,7 @@ Deno.serve(async (req) => {
     const { data: rpcData, error: rpcError } = await supabaseClient.rpc('sync_user_subscription', {
       revenue_cat_customer_id: revenue_cat_customer_id,
       revenue_cat_subscription_id: revenue_cat_subscription_id || null,
+      is_pro_active: isProActive, 
     });
 
     if (rpcError) {
